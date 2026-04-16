@@ -183,7 +183,7 @@ router.get('/', optionalAuth, async (req, res) => {
         const keywordWhereClause = 'WHERE p.status = 0 AND (p.title LIKE ? OR p.content LIKE ? OR u.nickname LIKE ? OR u.user_id LIKE ? OR EXISTS (SELECT 1 FROM post_tags pt2 JOIN tags t2 ON pt2.tag_id = t2.id WHERE pt2.post_id = p.id AND t2.name LIKE ?))';
         const keywordParams = [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`];
 
-        // 获取keyword搜索结果中的标签统计
+        // 获取keyword搜索结果中的标签统计 - 按数量降序排序
         const [tagStatsResult] = await pool.execute(
           `SELECT t.name, COUNT(*) as count
            FROM tags t
@@ -192,7 +192,7 @@ router.get('/', optionalAuth, async (req, res) => {
            LEFT JOIN users u ON p.user_id = u.id
            ${keywordWhereClause}
            GROUP BY t.id, t.name
-           ORDER BY t.name ASC
+           ORDER BY count DESC
            LIMIT 10`,
           keywordParams
         );
@@ -202,6 +202,38 @@ router.get('/', optionalAuth, async (req, res) => {
           label: item.name,
           count: item.count
         }));
+
+        // 如果指定了tag，且tag不在前10中，则需要将其补充进去
+        if (tag && !tagStats.some(t => t.id === tag)) {
+          const [tagCount] = await pool.execute(
+            `SELECT COUNT(*) as count
+             FROM post_tags pt
+             JOIN tags t ON pt.tag_id = t.id
+             JOIN posts p ON pt.post_id = p.id
+             LEFT JOIN users u ON p.user_id = u.id
+             ${keywordWhereClause} AND t.name = ?`,
+            [...keywordParams, tag]
+          );
+          
+          if (tagCount[0].count > 0) {
+            tagStats.push({
+              id: tag,
+              label: tag,
+              count: tagCount[0].count
+            });
+            // 重新排序并保持10个限制
+            tagStats.sort((a, b) => b.count - a.count);
+            if (tagStats.length > 10) {
+              // 如果选中的标签在排序后还是最后一位且超过了10个，则保留它，去掉倒数第二个
+              const tagIndex = tagStats.findIndex(t => t.id === tag);
+              if (tagIndex >= 10) {
+                 tagStats.splice(9, 1); // 去掉第10个
+              } else {
+                 tagStats.pop();
+              }
+            }
+          }
+        }
       }
 
       // all模式直接返回数据，posts模式和videos模式返回posts结构
